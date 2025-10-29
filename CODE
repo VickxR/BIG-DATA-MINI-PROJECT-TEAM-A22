@@ -1,0 +1,71 @@
+# If packages are missing, uncomment the pip lines and run once
+# %pip install scikit-learn pandas matplotlib
+
+import pandas as pd
+import numpy as np
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
+
+# Option A: Generate synthetic dataset (fast, use this if you don't have real data)
+def gen_synthetic(n=2000, anomaly_frac=0.03, seed=42):
+    rng = np.random.RandomState(seed)
+    # normal behavior
+    face_present = rng.binomial(1, 0.98, size=n)
+    multiple_faces = rng.binomial(1, 0.01, size=n)
+    gaze_away_count = rng.poisson(1, size=n)
+    tab_switch_count = rng.poisson(0.2, size=n)
+    audio_event_count = rng.poisson(0.1, size=n)
+    motion_score = rng.normal(0.2, 0.1, size=n)  # low motion normally
+
+    df = pd.DataFrame({
+        "face_present": face_present,
+        "multiple_faces": multiple_faces,
+        "gaze_away_count": gaze_away_count,
+        "tab_switch_count": tab_switch_count,
+        "audio_event_count": audio_event_count,
+        "motion_score": motion_score
+    })
+
+    # Inject anomalies
+    k = max(1, int(n * anomaly_frac))
+    idx = rng.choice(n, k, replace=False)
+    df.loc[idx, "multiple_faces"] = 1
+    df.loc[idx, "gaze_away_count"] += rng.poisson(10, size=k)
+    df.loc[idx, "tab_switch_count"] += rng.poisson(5, size=k)
+    df.loc[idx, "audio_event_count"] += rng.poisson(3, size=k)
+    df.loc[idx, "motion_score"] += rng.normal(1.5, 0.5, size=k)
+    df["session_id"] = ["sess_" + str(i) for i in range(len(df))]
+    return df
+
+df = gen_synthetic(2000)
+display(df.head())
+features = ["face_present","multiple_faces","gaze_away_count","tab_switch_count","audio_event_count","motion_score"]
+X = df[features].fillna(0).values
+
+scaler = StandardScaler()
+Xs = scaler.fit_transform(X)
+
+clf = IsolationForest(n_estimators=200, contamination=0.03, random_state=42)
+clf.fit(Xs)
+
+# anomaly score: lower => more anomalous, sklearn has decision_function (the higher, the less abnormal)
+df["anomaly_score_raw"] = clf.decision_function(Xs)  # higher = more normal
+df["suspicion_score"] = -df["anomaly_score_raw"]     # flip so higher = more suspicious
+df["is_anomaly"] = clf.predict(Xs)                  # -1 anomaly, 1 normal
+df["is_anomaly"] = df["is_anomaly"].map({1:0, -1:1})
+anoms = df.sort_values("suspicion_score", ascending=False).head(30)
+print("Top anomalies (session_id, suspicion_score):")
+display(anoms[["session_id","suspicion_score","is_anomaly"] + features])
+
+# Quick histogram of suspicion scores
+plt.figure(figsize=(8,4))
+plt.hist(df["suspicion_score"], bins=50)
+plt.title("Suspicion score distribution")
+plt.xlabel("suspicion_score (higher → more suspicious)")
+plt.show()
+out = anoms.copy()
+out_path = "/dbfs/FileStore/proctoring_anomalies_top30.csv"
+out.to_csv(out_path, index=False)
+print("Saved top anomalies to:", out_path)
+# In UI you can go to Data -> DBFS -> FileStore -> get the file, or use workspace file browser.
